@@ -1,8 +1,10 @@
-import google.generativeai as genai
+from google import genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-from google.generativeai.errors import APIError
+# Note: The new SDK uses google.api_core.exceptions for errors,
+# but we will rely on the general Exception block.
+# We have removed 'from google.generativeai.errors import APIError'
 
 # --- Configuration and Initialization ---
 
@@ -13,22 +15,20 @@ API_KEY = os.environ.get("GOOGLE_API_KEY")
 MODEL_TO_USE = 'gemini-2.5-flash' 
 
 if not API_KEY:
-    # Print a warning for the Azure logs if the key is missing
+    # In a cloud environment, print a fatal message
     print("FATAL: GOOGLE_API_KEY environment variable not found. The application cannot start.")
 
 try:
-    # Configure and initialize the model only if the API key is present
+    # Initialize the new client. 
+    # It automatically uses the GOOGLE_API_KEY environment variable.
     if API_KEY:
-        genai.configure(api_key=API_KEY)
-        # The GenerativeModel instance explicitly uses gemini-2.5-flash
-        model = genai.GenerativeModel(MODEL_TO_USE)
+        client = genai.Client()
     else:
-        # Placeholder if configuration failed
-        model = None 
+        client = None 
 except Exception as e:
-    # Log configuration errors
-    print(f"ERROR: Failed to configure Google Generative AI: {e}")
-    model = None
+    # Handle configuration failure
+    print(f"ERROR: Failed to configure Google Generative AI Client: {e}")
+    client = None
 
 # Initialize Flask app
 # The name must be 'app' for Azure/Gunicorn to easily find it.
@@ -44,8 +44,8 @@ def execute_mental_health(query: str):
     Skill: Mental Health Advice - Provides general guidance using the Gemini API and Google Search.
     NOTE: Includes a strong system instruction to ensure responsible, non-clinical advice.
     """
-    if not model:
-        raise Exception("AI model failed to initialize due to missing or invalid API key.")
+    if not client:
+        raise Exception("AI client failed to initialize due to missing or invalid API key.")
 
     # CRITICAL: Define a strong, safety-focused system prompt for mental health context.
     system_prompt = (
@@ -57,8 +57,10 @@ def execute_mental_health(query: str):
     )
 
     # Use Google Search grounding tool for general self-care techniques/resource links
-    response = model.generate_content(
-        query, 
+    # Updated syntax for the new genai.Client
+    response = client.generate_content(
+        model=MODEL_TO_USE,
+        contents=query, 
         system_instruction=system_prompt, 
         tools=[{"google_search": {}}]
     )
@@ -72,10 +74,10 @@ def check():
     Simple health check route used to confirm the backend server is running and accessible.
     """
     status_code = 200
-    if not model:
-        # Return 503 if the core dependency (AI model) failed to initialize
+    if not client:
+        # Return 503 if the core dependency (AI client) failed to initialize
         status_code = 503
-        message = "backend is running, but AI model failed to initialize."
+        message = "backend is running, but AI client failed to initialize."
     else:
         message = "backend is running"
 
@@ -90,7 +92,7 @@ def check():
 @app.route('/api/execute', methods=['POST'])
 def execute():
     # 1. Input Validation
-    if not model:
+    if not client:
         return jsonify({'error': 'AI service not initialized. Check API key configuration.'}), 503
 
     data = request.get_json(silent=True)
@@ -108,12 +110,10 @@ def execute():
         
         return jsonify({'success': True, 'result': result})
         
-    except APIError as e:
-        # Handle specific Gemini API errors
-        print(f"Gemini API Error: {e}")
-        return jsonify({'error': f'AI Service Unavailable or request error: {e}'}), 503
+    # Removed the specific APIError block as requested
         
     except Exception as e:
         # Catch all other unexpected errors
         print(f"Internal Server Error: {e}")
         return jsonify({'error': 'An unexpected internal server error occurred.'}), 500
+
